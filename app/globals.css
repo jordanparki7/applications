@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0A0A0A;
+  --foreground: #FAFAFA;
 }
 
 @theme inline {
@@ -12,15 +12,49 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
+/* ---- Animations ---- */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes typing-dot {
+  0%,60%,100% { opacity: .3; transform: translateY(0); }
+  30%          { opacity: 1;  transform: translateY(-4px); }
+}
+
+.animate-fade-in  { animation: fade-in  .5s ease-out both; }
+.animate-slide-up { animation: slide-up .5s ease-out both; }
+
+.stagger > * { opacity: 0; animation: slide-up .45s ease-out both; }
+.stagger > :nth-child(1) { animation-delay: .05s; }
+.stagger > :nth-child(2) { animation-delay: .10s; }
+.stagger > :nth-child(3) { animation-delay: .15s; }
+.stagger > :nth-child(4) { animation-delay: .20s; }
+.stagger > :nth-child(5) { animation-delay: .25s; }
+.stagger > :nth-child(6) { animation-delay: .30s; }
+
+.typing-dot { animation: typing-dot 1.4s ease-in-out infinite; }
+.typing-dot:nth-child(2) { animation-delay: .2s; }
+.typing-dot:nth-child(3) { animation-delay: .4s; }
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar       { width: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #7C3AED; border-radius: 10px; }
+
+/* ---- Selection ---- */
+::selection { background: rgba(124,58,237,.3); color: #fff; }
