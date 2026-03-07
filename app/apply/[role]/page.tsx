@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
@@ -33,6 +33,12 @@ interface Message {
   script?: ScriptBlock;
 }
 
+interface EmailValidationResult {
+  valid: boolean;
+  normalized?: string;
+  invalidEntries?: string[];
+}
+
 function renderInlineBold(text: string) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, index) => {
@@ -41,6 +47,52 @@ function renderInlineBold(text: string) {
     }
     return <span key={`${part}-${index}`}>{part}</span>;
   });
+}
+
+function parseAge(value: string): number | null {
+  const match = value.match(/\d{1,3}/);
+  if (!match) return null;
+
+  const age = Number.parseInt(match[0], 10);
+  return Number.isNaN(age) ? null : age;
+}
+
+function validateEmails(value: string): EmailValidationResult {
+  const normalizedInput = value
+    .replace(/\s+-\s+/g, ",")
+    .replace(/\n/g, " ")
+    .trim();
+
+  const rawEntries = normalizedInput
+    .split(/[\s,;]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (rawEntries.length === 0) {
+    return { valid: false, invalidEntries: ["(empty)"] };
+  }
+
+  const cleanedEntries = rawEntries.map((entry) =>
+    entry
+      .replace(/^[<\[("]+/, "")
+      .replace(/[>\])",.]+$/, "")
+  );
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+  const invalidEntries = cleanedEntries.filter((entry) => !emailRegex.test(entry));
+
+  if (invalidEntries.length > 0) {
+    return { valid: false, invalidEntries };
+  }
+
+  const uniqueNormalized = Array.from(
+    new Set(cleanedEntries.map((entry) => entry.toLowerCase()))
+  );
+
+  return {
+    valid: true,
+    normalized: uniqueNormalized.join(", "),
+  };
 }
 
 /* ================================================================
@@ -374,7 +426,7 @@ const ROLE_NAMES: Record<string, string> = {
 export default function ApplyPage() {
   const { role } = useParams<{ role: string }>();
   const roleName = ROLE_NAMES[role] ?? role;
-  const questions = useRef(buildQuestions(role)).current;
+  const questions = useMemo(() => buildQuestions(role), [role]);
   const totalQs = questions.length;
 
   /* state */
@@ -427,12 +479,19 @@ export default function ApplyPage() {
 
     const first = questions[0];
     const section = SECTIONS[first.section];
-    queueMessages([
-      { from: "bot", text: `Welcome! You\u2019re applying for the **${roleName}** role. Let\u2019s begin.` },
-      { from: "section", text: section.title },
-      { from: "bot", text: section.intro },
-      { from: "bot", text: first.text, script: first.script },
-    ]);
+
+    /* Defer so the setState calls inside queueMessages don't run
+       synchronously during the effect body (React 19 strict-mode). */
+    const id = setTimeout(() => {
+      queueMessages([
+        { from: "bot", text: `Welcome! You\u2019re applying for the **${roleName}** role. Let\u2019s begin.` },
+        { from: "section", text: section.title },
+        { from: "bot", text: section.intro },
+        { from: "bot", text: first.text, script: first.script },
+      ]);
+    }, 0);
+
+    return () => clearTimeout(id);
   }, [queueMessages, questions, roleName]);
 
   /* ---- send handler ---- */
@@ -446,13 +505,26 @@ export default function ApplyPage() {
     setMessages((prev) => [...prev, { id: nextId(), from: "user", text }]);
     setInput("");
 
-    /* store answer */
-    setAnswers((prev) => ({ ...prev, [question.id]: text }));
+    let answerToStore = text;
 
     /* age gate */
     if (question.ageGate) {
-      const match = text.match(/\d+/);
-      if (match && parseInt(match[0]) < 18) {
+      const age = parseAge(text);
+
+      if (age === null) {
+        queueMessages([
+          {
+            from: "bot",
+            text: "I couldn\'t detect a valid age number in your response. Please enter your age using digits (example: **21**).",
+          },
+          { from: "bot", text: question.text, script: question.script },
+        ]);
+        return;
+      }
+
+      answerToStore = String(age);
+
+      if (age < 18) {
         setBlocked(true);
         queueMessages([
           {
@@ -462,6 +534,33 @@ export default function ApplyPage() {
         ]);
         return;
       }
+    }
+
+    /* email validation */
+    if (question.id === "email") {
+      const emailResult = validateEmails(text);
+
+      if (!emailResult.valid) {
+        const invalidPreview = emailResult.invalidEntries?.length
+          ? `\n\nInvalid: ${emailResult.invalidEntries
+              .slice(0, 5)
+              .map((entry) => `\`${entry}\``)
+              .join(", ")}`
+          : "";
+
+        queueMessages([
+          {
+            from: "bot",
+            text:
+              "That email format looks incorrect. Please enter one or more valid email addresses.\n\nExamples:\n• name@example.com\n• name@example.com, second@example.com\n• name@example.com second@example.com" +
+              invalidPreview,
+          },
+          { from: "bot", text: question.text, script: question.script },
+        ]);
+        return;
+      }
+
+      answerToStore = emailResult.normalized ?? text;
     }
 
     /* NDA gate */
@@ -479,6 +578,9 @@ export default function ApplyPage() {
       }
     }
 
+    /* store answer after validation gates pass */
+    setAnswers((prev) => ({ ...prev, [question.id]: answerToStore }));
+
     /* advance */
     const nextIdx = qIdx + 1;
 
@@ -486,7 +588,7 @@ export default function ApplyPage() {
     if (nextIdx >= totalQs) {
       setFinished(true);
       /* save to localStorage */
-      const finalAnswers = { ...answers, [question.id]: text };
+      const finalAnswers = { ...answers, [question.id]: answerToStore };
       const submittedAt = new Date().toISOString();
       localStorage.setItem(
         `ae_application_${role}`,
@@ -543,7 +645,7 @@ export default function ApplyPage() {
         { from: "section", text: "Section 5 Thank You!" },
         {
           from: "bot",
-          text: "Thank you for your application! If your application is successful, we will be in touch soon.\n\nYour responses have been recorded.",
+          text: "🎉 Thank you for your application! If your application is successful, we will be in touch soon.\n\n✨ Your responses have been recorded successfully.\n\n🎊 We appreciate the time and effort you put into this.",
         },
       ]);
       return;
