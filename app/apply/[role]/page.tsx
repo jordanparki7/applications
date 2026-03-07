@@ -23,6 +23,7 @@ interface Question {
   script?: ScriptBlock;
   optional?: boolean;
   ageGate?: boolean;
+  ndaGate?: boolean;
 }
 
 interface Message {
@@ -314,8 +315,9 @@ function buildQuestions(role: string): Question[] {
   qs.push({ id: "age", section: 1, type: "text", text: "What is your age?", ageGate: true });
   qs.push({ id: "email", section: 1, type: "text", text: "What is your email address?" });
   qs.push({ id: "location", section: 1, type: "text", text: "What is your current country and timezone?" });
-  qs.push({ id: "nda", section: 1, type: "text", text: "Would you be happy to sign a mutual NDA - non-disclosure agreement?" });
+  qs.push({ id: "nda", section: 1, type: "text", text: "Would you be happy to sign a mutual NDA - non-disclosure agreement?", ndaGate: true });
   qs.push({ id: "other_teams", section: 1, type: "text", text: "Do you currently work for any other Marketplace teams? If yes, who?" });
+  qs.push({ id: "structures_jigsaws_features", section: 1, type: "text", text: "Do you have experience working with structures, jigsaws, features, and feature rules?" });
 
   /* --- Section 2: About You --- */
   qs.push({ id: "experience", section: 2, type: "text", text: "What experience do you have that you think would be relevant to the role you are applying for?" });
@@ -462,6 +464,21 @@ export default function ApplyPage() {
       }
     }
 
+    /* NDA gate */
+    if (question.ndaGate) {
+      const neg = /^\s*(no|nah|nope|never|not really|i don'?t|i do not|i wouldn'?t|i would not|i refuse|decline|pass)\b/i;
+      if (neg.test(text)) {
+        setBlocked(true);
+        queueMessages([
+          {
+            from: "bot",
+            text: "Unfortunately we require all team members to sign a mutual NDA before onboarding. We\u2019re unable to proceed with your application at this time. Thank you for your interest in Architects Edge.",
+          },
+        ]);
+        return;
+      }
+    }
+
     /* advance */
     const nextIdx = qIdx + 1;
 
@@ -470,10 +487,47 @@ export default function ApplyPage() {
       setFinished(true);
       /* save to localStorage */
       const finalAnswers = { ...answers, [question.id]: text };
+      const submittedAt = new Date().toISOString();
       localStorage.setItem(
         `ae_application_${role}`,
-        JSON.stringify({ role, submittedAt: new Date().toISOString(), answers: finalAnswers })
+        JSON.stringify({ role, submittedAt, answers: finalAnswers })
       );
+
+      /* send to Discord webhook */
+      fetch("/api/discord", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role,
+          roleName,
+          submittedAt,
+          answers: finalAnswers,
+        }),
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            const raw = await response.text().catch(() => "");
+            let details: unknown = null;
+
+            if (raw) {
+              try {
+                details = JSON.parse(raw);
+              } catch {
+                details = { raw };
+              }
+            }
+
+            // Keep this as a warning to avoid Next dev's red console-error overlay.
+            console.warn("Discord webhook submission failed", {
+              status: response.status,
+              details,
+            });
+          }
+        })
+        .catch((error) => {
+          // Keep this as a warning to avoid Next dev's red console-error overlay.
+          console.warn("Discord webhook submission error", error);
+        });
 
       /* Celebrate */
       confetti({
@@ -481,7 +535,9 @@ export default function ApplyPage() {
         spread: 70,
         origin: { y: 0.6 },
       });
-      new Audio("/complete.mp3").play().catch(() => {});
+      const sfx = new Audio("/complete.mp3");
+      sfx.volume = 0.33;
+      sfx.play().catch(() => {});
 
       queueMessages([
         { from: "section", text: "Section 5 Thank You!" },
